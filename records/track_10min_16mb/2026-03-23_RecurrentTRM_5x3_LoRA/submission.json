@@ -1,0 +1,16 @@
+{
+  "name": "Fuming",
+  "github_id": "",
+  "val_bpb": null,
+  "architecture": "Recurrent Universal Transformer 9x3 with per-pass LoRA",
+  "num_physical_blocks": 9,
+  "num_passes": 3,
+  "effective_depth": 27,
+  "lora_rank": 4,
+  "d_model": 512,
+  "num_heads": 8,
+  "num_kv_heads": 4,
+  "mlp_mult": 3,
+  "vocab_size": 1024,
+  "notes": "Default 9 physical blocks at d=512 targets ~22M params / ~12–14MB int8+zlib (under 16MB with code). Widen to 768 only after checking artifact size."
+}
