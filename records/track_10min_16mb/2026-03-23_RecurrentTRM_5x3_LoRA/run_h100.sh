@@ -2,15 +2,20 @@
 # =============================================================================
 # run_h100.sh — Competition run for Recurrent TRM 9×3 + per-pass LoRA
 #
-# Usage (8×H100, competition):
+# Usage (8×H100, competition — default):
 #   bash run_h100.sh
 #
-# Usage (single GPU, testing / cheaper pods):
+# Usage (1×H100, single-GPU testing):
 #   NPROC_PER_NODE=1 bash run_h100.sh
 #
+# The script automatically adjusts time-sensitive hyperparameters based on
+# GPU count, because warmdown and LR warmup are step-count-based but the
+# wall-clock budget is fixed at 600s.  On 1×H100 each step is ~8× slower
+# (grad_accum=8 sequential micro-batches) + ~3× recurrent overhead, so
+# ~24× fewer steps fit in 600s than on 8×H100.
+#
 # After the run completes, copy the log off RunPod:
-#   scp <user>@<pod-ip>:/workspace/parameter-golf/records/track_10min_16mb/2026-03-23_RecurrentTRM_5x3_LoRA/logs/<run_name>.log ./logs/
-# Then rename it to train_seed<SEED>.log (e.g. train_seed1337.log) before submission.
+#   scp <user>@<pod-ip>:.../logs/<run_name>.log ./logs/train_seed<SEED>.log
 # Repeat with SEED=42 and SEED=2024 for the 3-run statistical requirement.
 # =============================================================================
 set -e
@@ -37,22 +42,59 @@ else:
 
 mkdir -p logs
 
+# ---------------------------------------------------------------------------
+# Per-GPU-count hyperparameters.
+#
+# WHY THESE DIFFER:
+#   The wall clock is fixed at 600s for both configs.  Warmdown and LR warmup
+#   are specified in *steps*, but the script's lr_mul() uses wall-clock time
+#   to decide when warmdown begins (warmdown_ms = WARMDOWN_ITERS × ms/step).
+#   If WARMDOWN_ITERS × ms/step > 600s, warmdown starts at step 0 — the
+#   model never trains at full LR.
+#
+#   8×H100: ~130ms/step (baseline 43ms × 3 recurrent passes)
+#     → 1200 steps × 130ms = 156s  ✓  warmdown occupies last 156s of 600s
+#     → 150 LR warmup steps × 130ms = 19.5s  ✓  ~3% of budget
+#     → 500 Muon momentum warmup × 130ms = 65s  ✓  reaches target by step 500
+#
+#   1×H100: ~1000ms/step (8 grad_accum micro-batches × 3 recurrent passes)
+#     → 1200 steps × 1000ms = 1200s >> 600s  ✗  warmdown starts immediately
+#     → 150 LR warmup steps × 1000ms = 150s = 25% of budget  (too long)
+#     → 500 Muon momentum steps × 1000ms = 500s  (momentum never stabilises)
+#     Fix: scale everything down ~8× to match expected ~600 total steps.
+# ---------------------------------------------------------------------------
+
+if [ "$NPROC" -eq 1 ]; then
+    # 1×H100 — ~600 total steps in 600s
+    WARMDOWN_ITERS=120       # last ~20% of wall clock (~120s)
+    LR_WARMUP_STEPS=60       # ~10% of budget (60s)
+    MUON_MOMENTUM_WARMUP_STEPS=100  # reaches 0.95 by step 100 (~100s)
+    echo "Mode: 1×H100  (single-GPU schedule)"
+else
+    # 8×H100 — ~4600 total steps in 600s (competition default)
+    WARMDOWN_ITERS=1200      # last ~156s of wall clock
+    LR_WARMUP_STEPS=150      # ~19.5s warmup
+    MUON_MOMENTUM_WARMUP_STEPS=500  # reaches 0.95 by step 500 (~65s)
+    echo "Mode: 8×H100  (competition schedule)"
+fi
+
 echo "========================================"
 echo "Starting run: $RUN_NAME"
 echo "GPUs: $NPROC  Seed: $SEED"
 echo "Data root: $DATA_ROOT"
 echo "Max wallclock: 600s (10 min)"
 echo "Max iterations: 20000 (wallclock will stop it first)"
-echo "Warmdown: 1200 steps"
+echo "Warmdown: $WARMDOWN_ITERS steps  LR warmup: $LR_WARMUP_STEPS steps"
+echo "Muon momentum warmup: $MUON_MOMENTUM_WARMUP_STEPS steps"
 echo "========================================"
 
 SEED=$SEED \
 RUN_ID=$RUN_NAME \
 MAX_WALLCLOCK_SECONDS=600 \
 ITERATIONS=20000 \
-WARMDOWN_ITERS=1200 \
+WARMDOWN_ITERS=$WARMDOWN_ITERS \
 WARMUP_STEPS=20 \
-LR_WARMUP_STEPS=150 \
+LR_WARMUP_STEPS=$LR_WARMUP_STEPS \
 TRAIN_BATCH_TOKENS=524288 \
 TRAIN_SEQ_LEN=1024 \
 NUM_LAYERS=9 \
@@ -67,7 +109,7 @@ SCALAR_LR=0.04 \
 TIED_EMBED_LR=0.05 \
 MUON_MOMENTUM=0.95 \
 MUON_MOMENTUM_WARMUP_START=0.85 \
-MUON_MOMENTUM_WARMUP_STEPS=500 \
+MUON_MOMENTUM_WARMUP_STEPS=$MUON_MOMENTUM_WARMUP_STEPS \
 MUON_BACKEND_STEPS=5 \
 GRAD_CLIP_NORM=1.0 \
 VAL_LOSS_EVERY=200 \
