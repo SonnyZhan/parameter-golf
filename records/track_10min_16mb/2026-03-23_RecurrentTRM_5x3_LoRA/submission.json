@@ -1,16 +1,12 @@
 {
-  "name": "Fuming",
+  "author": "Fuming",
   "github_id": "",
+  "name": "Recurrent TRM 9x3 + per-pass LoRA",
+  "blurb": "9 physical transformer blocks looped 3 times (27 effective layers) with shared weights and per-pass low-rank Q/V adapters (LoRA rank 4). GQA (8Q/4KV heads), tied embeddings, logit softcap, RoPE, Muon for backbone 2D weights, Adam for LoRA/scalars. Weight sharing across recurrences reduces parameter count; LoRA lets each pass specialize attention without duplicating full matrices.",
+  "date": "2026-03-23T00:00:00Z",
+  "val_loss": null,
   "val_bpb": null,
-  "architecture": "Recurrent Universal Transformer 9x3 with per-pass LoRA",
-  "num_physical_blocks": 9,
-  "num_passes": 3,
-  "effective_depth": 27,
-  "lora_rank": 4,
-  "d_model": 512,
-  "num_heads": 8,
-  "num_kv_heads": 4,
-  "mlp_mult": 3,
-  "vocab_size": 1024,
-  "notes": "Default 9 physical blocks at d=512 targets ~22M params / ~12–14MB int8+zlib (under 16MB with code). Widen to 768 only after checking artifact size."
+  "bytes_total": null,
+  "bytes_code": null,
+  "notes": "val_loss, val_bpb, bytes_total, bytes_code to be filled from the final_int8_zlib_roundtrip lines in the training log after the H100 run."
 }
