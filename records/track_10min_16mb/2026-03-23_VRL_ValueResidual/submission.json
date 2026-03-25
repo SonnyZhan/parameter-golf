@@ -1,0 +1,11 @@
+{
+  "name": "Fuming",
+  "github_id": "",
+  "val_bpb": null,
+  "architecture": "Standard 11-layer GPT with Value Residual Learning (VRL)",
+  "num_layers": 11,
+  "d_model": 512,
+  "vrl_alpha_init": 0.0,
+  "vocab_size": 1024,
+  "notes": "val_bpb to be filled after cloud run"
+}
