@@ -2,12 +2,16 @@
 
 Working notes, not polished docs. See README.md for the submission-facing version.
 
-## Current config: 9 physical blocks × 3 passes, d=512
+## Current config: 8 physical blocks × 3 passes, d=512
 
-Moved from the original 5×512 (~12.4M params, ~3.7MB int8+zlib) to 9×512 to use more of the
-~16MB artifact budget. Rule of thumb: ~20M params at 512 width → ~13MB int8+zlib. 9 blocks
-lands at ~22M params — verify with `Total submission size int8+zlib:` in the training log
-every time you change NUM_LAYERS.
+Moved to 8 blocks after a measured 1×H100 run confirmed that **9 blocks overshoots the 16MB cap**:
+
+- 9 blocks: payload 22.7MB → int8+zlib 17.6MB + 50KB code = **17.6MB  ✗ over limit**
+- 8 blocks (estimated): ~15.7MB  ✓
+- 7 blocks (estimated): ~13.8MB  ✓ (more headroom, less capacity)
+
+Rule of thumb from measured compression ratio (1.29x on int8+zlib):
+each block removed saves ~2.4MB payload → ~1.9MB compressed.
 
 **Do not** jump to MODEL_DIM=768 without checking: 10×768 is ~52M params and will not fit.
 

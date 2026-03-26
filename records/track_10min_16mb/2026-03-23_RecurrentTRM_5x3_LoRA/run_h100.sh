@@ -84,6 +84,7 @@ echo "GPUs: $NPROC  Seed: $SEED"
 echo "Data root: $DATA_ROOT"
 echo "Max wallclock: 600s (10 min)"
 echo "Max iterations: 20000 (wallclock will stop it first)"
+echo "Layers: 8x3=24 effective  (9 layers = 17.6MB artifact, over 16MB limit)"
 echo "Warmdown: $WARMDOWN_ITERS steps  LR warmup: $LR_WARMUP_STEPS steps"
 echo "Muon momentum warmup: $MUON_MOMENTUM_WARMUP_STEPS steps"
 echo "========================================"
@@ -97,7 +98,7 @@ WARMUP_STEPS=20 \
 LR_WARMUP_STEPS=$LR_WARMUP_STEPS \
 TRAIN_BATCH_TOKENS=524288 \
 TRAIN_SEQ_LEN=1024 \
-NUM_LAYERS=9 \
+NUM_LAYERS=8 \
 NUM_PASSES=3 \
 LORA_RANK=4 \
 MODEL_DIM=512 \
