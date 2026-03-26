@@ -1,18 +1,18 @@
 #!/bin/bash
 # =============================================================================
-# run_h100.sh — Competition run for Recurrent TRM 9×3 + per-pass LoRA
+# run_h100.sh — Recurrent TRM 7×3 + per-pass LoRA (rank 4)
 #
-# Usage (8×H100, competition — default):
-#   bash run_h100.sh
+# Two modes:
 #
-# Usage (1×H100, single-GPU testing):
-#   NPROC_PER_NODE=1 bash run_h100.sh
+#   1×H100 testing (1200 real iterations, no time cap):
+#     NPROC_PER_NODE=1 bash run_h100.sh
 #
-# The script automatically adjusts time-sensitive hyperparameters based on
-# GPU count, because warmdown and LR warmup are step-count-based but the
-# wall-clock budget is fixed at 600s.  On 1×H100 each step is ~8× slower
-# (grad_accum=8 sequential micro-batches) + ~3× recurrent overhead, so
-# ~24× fewer steps fit in 600s than on 8×H100.
+#   8×H100 competition (20000 iter cap, 600s wall-clock stops it first):
+#     bash run_h100.sh
+#
+# Architecture: 7 physical blocks × 3 passes = 21 effective layers
+# Artifact target: under 16,000,000 bytes (decimal) after int8+zlib
+# LoRA matrices stored in fp16 (not fp32) to keep artifact size stable
 #
 # After the run completes, copy the log off RunPod:
 #   scp <user>@<pod-ip>:.../logs/<run_name>.log ./logs/train_seed<SEED>.log
@@ -23,82 +23,94 @@ set -e
 DATA_ROOT="${DATA_PATH:-/workspace/parameter-golf/data}"
 SEED="${SEED:-1337}"
 NPROC="${NPROC_PER_NODE:-8}"
-RUN_NAME="h100_recurrent_lora_9x3_seed${SEED}_$(date +%Y%m%d_%H%M%S)"
-
-# ---------------------------------------------------------------------------
-# Option A: ensure PyTorch >=2.5.0.
-# The code already uses repeat_interleave instead of enable_gqa (works on any
-# version), but >=2.5 also enables FlashAttention-3 improvements on H100.
-# ---------------------------------------------------------------------------
-python -c "
-import torch, sys
-major, minor = (int(x) for x in torch.__version__.split('.')[:2])
-if (major, minor) < (2, 5):
-    print(f'PyTorch {torch.__version__} < 2.5 detected, upgrading...', flush=True)
-    sys.exit(1)
-else:
-    print(f'PyTorch {torch.__version__} OK', flush=True)
-" || pip install --upgrade "torch>=2.5.0" --index-url https://download.pytorch.org/whl/cu121
+RUN_NAME="h100_recurrent_lora_7x3_seed${SEED}_$(date +%Y%m%d_%H%M%S)"
 
 mkdir -p logs
 
 # ---------------------------------------------------------------------------
-# Per-GPU-count hyperparameters.
+# Per-mode hyperparameters
 #
-# WHY THESE DIFFER:
-#   The wall clock is fixed at 600s for both configs.  Warmdown and LR warmup
-#   are specified in *steps*, but the script's lr_mul() uses wall-clock time
-#   to decide when warmdown begins (warmdown_ms = WARMDOWN_ITERS × ms/step).
-#   If WARMDOWN_ITERS × ms/step > 600s, warmdown starts at step 0 — the
-#   model never trains at full LR.
+# 1×H100 mode — 1200 real iterations, no wall-clock cap
+#   At ~1300ms/step (524k tokens ÷ 8 grad_accum × 3 recurrent passes):
+#   → 1200 steps × 1.3s ≈ 26 minutes total wall clock
+#   → WARMDOWN_ITERS=200: cooldown starts at step 1000 of 1200 (~17%)
+#   → LR_WARMUP_STEPS=150: ramp up over first 150 steps (~12%)
+#   → MUON_MOMENTUM_WARMUP_STEPS=500: Muon reaches 0.95 at step 500
+#   → MAX_WALLCLOCK_SECONDS=0: disabled, runs to ITERATIONS completion
 #
-#   8×H100: ~130ms/step (baseline 43ms × 3 recurrent passes)
-#     → 1200 steps × 130ms = 156s  ✓  warmdown occupies last 156s of 600s
-#     → 150 LR warmup steps × 130ms = 19.5s  ✓  ~3% of budget
-#     → 500 Muon momentum warmup × 130ms = 65s  ✓  reaches target by step 500
-#
-#   1×H100: ~1000ms/step (8 grad_accum micro-batches × 3 recurrent passes)
-#     → 1200 steps × 1000ms = 1200s >> 600s  ✗  warmdown starts immediately
-#     → 150 LR warmup steps × 1000ms = 150s = 25% of budget  (too long)
-#     → 500 Muon momentum steps × 1000ms = 500s  (momentum never stabilises)
-#     Fix: scale everything down ~8× to match expected ~600 total steps.
+# 8×H100 mode — competition default, 600s wall-clock cap
+#   At ~130ms/step (8 GPUs in parallel, no grad_accum):
+#   → 600s ÷ 0.13s ≈ 4600 steps before wall clock stops it
+#   → WARMDOWN_ITERS=1200: warmdown starts ~156s before end
+#   → LR_WARMUP_STEPS=150: 150 × 0.13s = 19.5s warmup
+#   → MUON_MOMENTUM_WARMUP_STEPS=500: 500 × 0.13s = 65s
+#   → MAX_WALLCLOCK_SECONDS=600: hard 10-minute cap for competition
 # ---------------------------------------------------------------------------
 
 if [ "$NPROC" -eq 1 ]; then
-    # 1×H100 — ~600 total steps in 600s
-    WARMDOWN_ITERS=120       # last ~20% of wall clock (~120s)
-    LR_WARMUP_STEPS=60       # ~10% of budget (60s)
-    MUON_MOMENTUM_WARMUP_STEPS=100  # reaches 0.95 by step 100 (~100s)
-    echo "Mode: 1×H100  (single-GPU schedule)"
+    # 1×H100 — 1200 real iterations, no time cap
+    MAX_WALLCLOCK_SECONDS=0
+    ITERATIONS=1200
+    WARMDOWN_ITERS=200
+    LR_WARMUP_STEPS=150
+    MUON_MOMENTUM_WARMUP_STEPS=500
+    echo "Mode: 1×H100  (1200 iterations, no wall-clock cap, ~26 min)"
 else
-    # 8×H100 — ~4600 total steps in 600s (competition default)
-    WARMDOWN_ITERS=1200      # last ~156s of wall clock
-    LR_WARMUP_STEPS=150      # ~19.5s warmup
-    MUON_MOMENTUM_WARMUP_STEPS=500  # reaches 0.95 by step 500 (~65s)
-    echo "Mode: 8×H100  (competition schedule)"
+    # 8×H100 — competition 10-minute mode
+    MAX_WALLCLOCK_SECONDS=600
+    ITERATIONS=20000
+    WARMDOWN_ITERS=1200
+    LR_WARMUP_STEPS=150
+    MUON_MOMENTUM_WARMUP_STEPS=500
+    echo "Mode: 8×H100  (competition schedule, 600s wall-clock cap)"
 fi
 
 echo "========================================"
-echo "Starting run: $RUN_NAME"
-echo "GPUs: $NPROC  Seed: $SEED"
-echo "Data root: $DATA_ROOT"
-echo "Max wallclock: 600s (10 min)"
-echo "Max iterations: 20000 (wallclock will stop it first)"
-echo "Layers: 8x3=24 effective  (9 layers = 17.6MB artifact, over 16MB limit)"
-echo "Warmdown: $WARMDOWN_ITERS steps  LR warmup: $LR_WARMUP_STEPS steps"
+echo "Run: $RUN_NAME"
+echo "GPUs: $NPROC  |  Seed: $SEED"
+echo "Architecture: 7 layers × 3 passes = 21 effective layers"
+echo "LoRA rank: 4  |  Stored as fp16 in artifact"
+echo "Iterations: $ITERATIONS  |  Wall-clock cap: ${MAX_WALLCLOCK_SECONDS}s (0=none)"
+echo "Warmdown: $WARMDOWN_ITERS steps  |  LR warmup: $LR_WARMUP_STEPS steps"
 echo "Muon momentum warmup: $MUON_MOMENTUM_WARMUP_STEPS steps"
+echo "Data: $DATA_ROOT"
 echo "========================================"
+
+# ---------------------------------------------------------------------------
+# Verify critical env vars propagate correctly into Python before spending
+# GPU time. Catches the silent failure where NUM_LAYERS=8 was ignored.
+# ---------------------------------------------------------------------------
+echo "--- Verifying env vars ---"
+NUM_LAYERS=7 NUM_PASSES=3 LORA_RANK=4 python3 -c "
+import os, sys
+checks = {
+    'NUM_LAYERS': ('7', os.environ.get('NUM_LAYERS', 'NOT_SET')),
+    'NUM_PASSES': ('3', os.environ.get('NUM_PASSES', 'NOT_SET')),
+    'LORA_RANK':  ('4', os.environ.get('LORA_RANK',  'NOT_SET')),
+}
+failed = False
+for name, (expected, got) in checks.items():
+    status = 'OK' if got == expected else 'FAIL'
+    print(f'  {name}: expected={expected}  got={got}  [{status}]')
+    if got != expected:
+        failed = True
+if failed:
+    print('ERROR: env vars not propagating into Python. Fix before running.')
+    sys.exit(1)
+print('All env vars OK — starting training')
+"
+echo "--- Starting torchrun ---"
 
 SEED=$SEED \
 RUN_ID=$RUN_NAME \
-MAX_WALLCLOCK_SECONDS=600 \
-ITERATIONS=20000 \
+MAX_WALLCLOCK_SECONDS=$MAX_WALLCLOCK_SECONDS \
+ITERATIONS=$ITERATIONS \
 WARMDOWN_ITERS=$WARMDOWN_ITERS \
 WARMUP_STEPS=20 \
 LR_WARMUP_STEPS=$LR_WARMUP_STEPS \
 TRAIN_BATCH_TOKENS=524288 \
 TRAIN_SEQ_LEN=1024 \
-NUM_LAYERS=8 \
+NUM_LAYERS=7 \
 NUM_PASSES=3 \
 LORA_RANK=4 \
 MODEL_DIM=512 \
@@ -122,15 +134,35 @@ VOCAB_SIZE=1024 \
 torchrun --standalone --nproc_per_node=$NPROC train_gpt.py \
   2>&1 | tee "logs/${RUN_NAME}.log"
 
+# ---------------------------------------------------------------------------
+# Post-run: parse artifact size and give a clear pass/fail verdict
+# ---------------------------------------------------------------------------
 echo ""
 echo "========================================"
 echo "Run complete."
-echo "Log saved to:  logs/${RUN_NAME}.log"
-echo "Model saved to: final_model.int8.ptz"
+echo "Log: logs/${RUN_NAME}.log"
+echo ""
+
+ARTIFACT_LINE=$(grep "Total submission size int8+zlib:" "logs/${RUN_NAME}.log" | tail -1)
+ARTIFACT_BYTES=$(echo "$ARTIFACT_LINE" | grep -o '[0-9]* bytes' | head -1 | grep -o '[0-9]*')
+
+if [ -n "$ARTIFACT_BYTES" ]; then
+    if [ "$ARTIFACT_BYTES" -lt 16000000 ]; then
+        echo "ARTIFACT: PASS  — ${ARTIFACT_BYTES} bytes (limit: 16,000,000)"
+    else
+        echo "ARTIFACT: FAIL  — ${ARTIFACT_BYTES} bytes (OVER 16,000,000 limit)"
+        echo "Action: reduce NUM_LAYERS to 6 and re-run"
+    fi
+else
+    echo "ARTIFACT: could not parse size — check log manually"
+fi
+
+BPB_LINE=$(grep "final_int8_zlib_roundtrip_exact" "logs/${RUN_NAME}.log" | tail -1)
+echo "VAL BPB: $BPB_LINE"
 echo ""
 echo "Next steps:"
-echo "  1. scp this log to your local logs/ folder"
-echo "  2. Rename it: train_seed${SEED}.log"
-echo "  3. Repeat with SEED=42 and SEED=2024 for the 3-run requirement"
-echo "  4. Fill val_bpb in submission.json from the final_int8_zlib_roundtrip line in the log"
+echo "  1. Copy log: scp ... logs/${RUN_NAME}.log ./logs/train_seed${SEED}.log"
+echo "  2. Copy artifact: scp ... final_model.int8.ptz ./"
+echo "  3. Repeat with SEED=42 and SEED=2024 for 3-run leaderboard requirement"
+echo "  4. Update submission.json with final val_bpb from BPB line above"
 echo "========================================"

@@ -286,7 +286,11 @@ INT8_KEEP_FLOAT_FP32_NAME_PATTERNS = tuple(
     pattern
     for pattern in os.environ.get(
         "INT8_KEEP_FLOAT_FP32_NAME_PATTERNS",
-        ",".join(CONTROL_TENSOR_NAME_PATTERNS),
+        "attn_scale,attn_scales,mlp_scale,mlp_scales,resid_mix,resid_mixes,"
+        "q_gain,skip_weight,skip_weights,pass_emb,vrl_alpha",
+        # lora_ intentionally excluded: stored fp16 not fp32 to keep artifact small.
+        # LoRA B matrices (zero-init) compress well near init but bloat as fp32 after
+        # real training. fp16 halves storage and gives stable compression regardless.
     ).split(",")
     if pattern
 )
