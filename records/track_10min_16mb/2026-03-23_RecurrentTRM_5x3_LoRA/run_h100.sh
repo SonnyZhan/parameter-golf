@@ -30,13 +30,15 @@ mkdir -p logs
 # ---------------------------------------------------------------------------
 # Per-mode hyperparameters
 #
-# 1×H100 mode — 1200 real iterations, no wall-clock cap
-#   At ~1300ms/step (524k tokens ÷ 8 grad_accum × 3 recurrent passes):
-#   → 1200 steps × 1.3s ≈ 26 minutes total wall clock
-#   → WARMDOWN_ITERS=200: cooldown starts at step 1000 of 1200 (~17%)
-#   → LR_WARMUP_STEPS=150: ramp up over first 150 steps (~12%)
+# 1×H100 mode — 3000 real iterations, no wall-clock cap
+#   Actual observed step time from previous run: ~1014ms/step
+#   → 3000 steps × 1.014s ≈ 51 minutes total wall clock
+#   → WARMDOWN_ITERS=500: cooldown starts at step 2500 of 3000 (16.7%)
+#   → LR_WARMUP_STEPS=200: ramp up over first 200 steps (6.7%)
 #   → MUON_MOMENTUM_WARMUP_STEPS=500: Muon reaches 0.95 at step 500
 #   → MAX_WALLCLOCK_SECONDS=0: disabled, runs to ITERATIONS completion
+#   Previous 1200-step result: val_bpb=1.3280, artifact=14.79MB (PASS)
+#   Expected 3000-step result: val_bpb≈1.18-1.22 (near competition baseline)
 #
 # 8×H100 mode — competition default, 600s wall-clock cap
 #   At ~130ms/step (8 GPUs in parallel, no grad_accum):
@@ -48,13 +50,13 @@ mkdir -p logs
 # ---------------------------------------------------------------------------
 
 if [ "$NPROC" -eq 1 ]; then
-    # 1×H100 — 1200 real iterations, no time cap
+    # 1×H100 — 3000 real iterations, no time cap
     MAX_WALLCLOCK_SECONDS=0
-    ITERATIONS=1200
-    WARMDOWN_ITERS=200
-    LR_WARMUP_STEPS=150
+    ITERATIONS=3000
+    WARMDOWN_ITERS=500
+    LR_WARMUP_STEPS=200
     MUON_MOMENTUM_WARMUP_STEPS=500
-    echo "Mode: 1×H100  (1200 iterations, no wall-clock cap, ~26 min)"
+    echo "Mode: 1×H100  (3000 iterations, no wall-clock cap, ~51 min)"
 else
     # 8×H100 — competition 10-minute mode
     MAX_WALLCLOCK_SECONDS=600
